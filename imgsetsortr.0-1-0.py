@@ -32,6 +32,11 @@ and file count (e.g., 'sydney_20250410_0600hrs_01_20') in a user-selected output
 (defaulting to input_folder/_groups).
 A GUI allows folder selection, subfolder processing, time threshold adjustment, and displays results.
 Comprehensive logging is written to a file in the application directory.
+
+ =======
+
+'voded' [vibe-coded] with Grok-ai
+
 """
 
 import sys
