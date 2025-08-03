@@ -1,0 +1,4 @@
+- cli functionality 
+- keyboard actions 
+- hash [first 3, 5?] for similarity ie, check not pairs [or pano?]
+- remove 'anaglyph' [coral+blue] theming 
