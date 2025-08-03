@@ -27,11 +27,11 @@ imgsetsortr
 
 A utility for grouping images in a folder based on contiguous timestamps from EXIF DateTimeOriginal.
 Images are grouped if 5 or more have timestamps within a user-settable time increment.
-Groups are moved into subfolders named with place (from EXIF, XMP, or GPS metadata), date, hour, group increment,
-and file count (e.g., 'sydney_20250410_0600hrs_01_20') in a user-selected output folder
+Groups are moved into subfolders named with place (from XMP, EXIF, GPS metadata, or parent directory),
+date, hour, minute, group increment, and file count (e.g., 'kirribilli_20250410-0627_01_20') in a user-selected output folder
 (defaulting to input_folder/_groups).
 A GUI allows folder selection, subfolder processing, time threshold adjustment, and displays results.
-Comprehensive logging is written to a file in the application directory.
+Comprehensive logging is written to a file in the application directory, including profiling data.
 
  =======
 
@@ -45,6 +45,8 @@ import shutil
 import threading
 import time
 import logging
+import cProfile
+import pstats
 from datetime import datetime
 from tkinter import filedialog, messagebox, Tk, Label, Button, Listbox, END, StringVar, Canvas
 from tkinter import ttk
@@ -54,12 +56,14 @@ from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
 import exifread
 import re
+import pyexiv2
 
 # Default time difference threshold (seconds) between consecutive images
 TIME_DIFF_THRESHOLD = 1.0
 
-# Initialize geocoder for location lookup
+# Initialize geocoder and cache for location lookup
 geolocator = Nominatim(user_agent="imgsetsortr")
+geocode_cache = {}  # Cache for reverse geocoding results: (lat, lon) -> place
 
 # Set up logging
 def setup_logging(app_dir):
@@ -156,6 +160,7 @@ def get_image_files(directory, recursive=False):
     Returns:
         list: List of image file paths with extensions .jpg, .jpeg, or .png.
     """
+    start_time = time.time()
     image_files = []
     if recursive:
         for root, dirs, files in os.walk(directory):
@@ -171,7 +176,8 @@ def get_image_files(directory, recursive=False):
             if f.lower().endswith((".jpg", ".jpeg", ".png"))
             and os.path.isfile(os.path.join(directory, f))
         ]
-    logger.info(f"Found {len(image_files)} image files in {directory} (recursive={recursive})")
+    elapsed = time.time() - start_time
+    logger.info(f"Found {len(image_files)} image files in {directory} (recursive={recursive}) in {elapsed:.2f}s")
     return image_files
 
 def get_image_files_by_folder(directory, recursive=False):
@@ -186,6 +192,7 @@ def get_image_files_by_folder(directory, recursive=False):
     Returns:
         dict: Mapping from folder path to list of image file paths.
     """
+    start_time = time.time()
     folders = {}
     if recursive:
         for root, dirs, files in os.walk(directory):
@@ -200,12 +207,15 @@ def get_image_files_by_folder(directory, recursive=False):
                 folders[root] = image_files
     else:
         folders[directory] = get_image_files(directory, recursive=False)
-    logger.info(f"Found images in {len(folders)} folders in {directory}")
+    elapsed = time.time() - start_time
+    logger.info(f"Found images in {len(folders)} folders in {directory} in {elapsed:.2f}s")
     return folders
 
 # Get image timestamp
 def get_image_timestamp(path):
     """Get the DateTimeOriginal timestamp from EXIF metadata, falling back to file modification time.
+
+    Validates the timestamp year to ensure it's reasonable (2000 to current year + 1).
 
     Args:
         path (str): Path to the image file.
@@ -213,6 +223,7 @@ def get_image_timestamp(path):
     Returns:
         datetime or None: Timestamp as a datetime object, or None if unavailable.
     """
+    start_time = time.time()
     try:
         with open(path, 'rb') as f:
             tags = exifread.process_file(f, details=False)
@@ -220,15 +231,29 @@ def get_image_timestamp(path):
             if date_str:
                 try:
                     dt = datetime.strptime(str(date_str), "%Y:%m:%d %H:%M:%S")
+                    current_year = datetime.now().year
+                    if dt.year < 2000 or dt.year > current_year + 1:
+                        logger.warning(f"Invalid year in EXIF DateTimeOriginal for {path}: {dt.year}")
+                        mtime = datetime.fromtimestamp(os.path.getmtime(path))
+                        logger.debug(f"Using file mtime for {path}: {mtime}")
+                        elapsed = time.time() - start_time
+                        logger.debug(f"Got timestamp for {path} in {elapsed:.2f}s (mtime)")
+                        return mtime
                     logger.debug(f"Got EXIF DateTimeOriginal for {path}: {dt}")
+                    elapsed = time.time() - start_time
+                    logger.debug(f"Got timestamp for {path} in {elapsed:.2f}s (EXIF)")
                     return dt
                 except ValueError as e:
                     logger.warning(f"Invalid EXIF DateTimeOriginal for {path}: {e}")
         mtime = datetime.fromtimestamp(os.path.getmtime(path))
         logger.debug(f"Using file mtime for {path}: {mtime}")
+        elapsed = time.time() - start_time
+        logger.debug(f"Got timestamp for {path} in {elapsed:.2f}s (mtime)")
         return mtime
     except Exception as e:
         logger.error(f"Failed to get timestamp for {path}: {e}")
+        elapsed = time.time() - start_time
+        logger.debug(f"Failed timestamp for {path} in {elapsed:.2f}s")
         return None
 
 # Convert GPS coordinates to decimal
@@ -242,54 +267,96 @@ def gps_to_decimal(gps_coords, direction):
     Returns:
         float: Decimal degrees, negative for S or W directions.
     """
+    start_time = time.time()
     try:
         degrees, minutes, seconds = gps_coords
         decimal = float(degrees) + float(minutes)/60 + float(seconds)/3600
         if direction in ['S', 'W']:
             decimal = -decimal
+        elapsed = time.time() - start_time
+        logger.debug(f"Converted GPS coords {gps_coords} ({direction}) to {decimal} in {elapsed:.2f}s")
         return decimal
     except Exception as e:
         logger.error(f"Failed to convert GPS coordinates {gps_coords}: {e}")
+        elapsed = time.time() - start_time
+        logger.debug(f"Failed GPS conversion in {elapsed:.2f}s")
         return None
 
-# Extract place from EXIF or XMP metadata
+# Extract place from XMP, EXIF, GPS metadata, or directory
 def get_place_from_exif_or_xmp(file_path):
-    """Extract location from EXIF metadata, XMP metadata, or GPS reverse geocoding.
+    """Extract location from XMP, EXIF, GPS reverse geocoding, or parent directory.
 
-    Checks EXIF fields (XPTitle, XPSubject, XPAuthor, XPComment, XPKeywords), then XMP <xmp:City>,
-    and finally falls back to GPS reverse geocoding.
+    Prioritizes:
+    1. XMP metadata (photoshop:City, Iptc4xmpCore:LocationCreated, Iptc4xmpCore:LocationShown, dc:location).
+    2. EXIF metadata (XPTitle, XPSubject, XPAuthor, XPComment, XPKeywords).
+    3. GPS reverse geocoding (suburb, neighbourhood, city, town, or village).
+    4. Non-generic parent directory name (skipping '_groups', '_copy', 'sub', etc.).
 
     Args:
         file_path (str): Path to the image file.
 
     Returns:
-        str: City name (lowercase, underscores), or 'unknown' if no location is found.
+        str: Normalized location name (e.g., 'kirribilli' or 'milsons-point'), or 'unknown' if none found.
     """
+    start_time = time.time()
+    def normalize_location(location):
+        """Normalize location name: hyphenate multi-word names, lowercase, and remove invalid chars."""
+        if not location:
+            return 'unknown'
+        location = re.sub(r'[^\w\s-]', '', location).strip()
+        location = '-'.join(word.lower() for word in location.split())
+        elapsed = time.time() - start_time
+        logger.debug(f"Normalized location '{location}' in {elapsed:.2f}s")
+        return location if location else 'unknown'
+
     try:
-        # Try EXIF metadata fields first
+        # Try XMP metadata first
+        try:
+            xmp_start = time.time()
+            img = pyexiv2.Image(file_path)
+            xmp_data = img.read_xmp()
+            xmp_fields = [
+                'Xmp.photoshop.City',
+                'Xmp.Iptc4xmpCore.LocationCreated',
+                'Xmp.Iptc4xmpCore.LocationShown',
+                'Xmp.dc.location'
+            ]
+            for field in xmp_fields:
+                if field in xmp_data:
+                    location = xmp_data[field]
+                    if location:
+                        logger.info(f"Got location from XMP {field} for {file_path}: {location}")
+                        img.close()
+                        elapsed = time.time() - start_time
+                        logger.debug(f"Got XMP location in {elapsed:.2f}s")
+                        return normalize_location(location)
+            img.close()
+            elapsed = time.time() - xmp_start
+            logger.debug(f"Checked XMP metadata for {file_path} in {elapsed:.2f}s")
+        except Exception as e:
+            logger.error(f"Error reading XMP metadata for {file_path}: {str(e)}")
+            elapsed = time.time() - start_time
+            logger.debug(f"Failed XMP metadata read in {elapsed:.2f}s")
+
+        # Read EXIF and GPS metadata in one pass
+        exif_start = time.time()
         with open(file_path, 'rb') as f:
             tags = exifread.process_file(f, details=False)
-            location_fields = ['Image XPTitle', 'Image XPSubject', 'Image XPAuthor', 'Image XPComment', 'Image XPKeywords']
-            for field in location_fields:
+            elapsed = time.time() - exif_start
+            logger.debug(f"Read EXIF tags for {file_path} in {elapsed:.2f}s")
+            # Try EXIF metadata
+            exif_fields = ['Image XPTitle', 'Image XPSubject', 'Image XPAuthor', 'Image XPComment', 'Image XPKeywords']
+            for field in exif_fields:
                 if field in tags:
                     city = str(tags[field]).strip()
                     if city:
-                        logger.info(f"Got city from EXIF {field} for {file_path}: {city}")
-                        return city.lower().replace(" ", "_")
+                        logger.info(f"Got location from EXIF {field} for {file_path}: {city}")
+                        elapsed = time.time() - start_time
+                        logger.debug(f"Got EXIF location in {elapsed:.2f}s")
+                        return normalize_location(city)
 
-        # Try XMP metadata
-        with open(file_path, 'rb') as f:
-            data = f.read()
-            xmp_match = re.search(rb'<xmp:City>(.*?)</xmp:City>', data, re.IGNORECASE | re.DOTALL)
-            if xmp_match:
-                city = xmp_match.group(1).decode('utf-8', errors='ignore').strip()
-                if city:
-                    logger.info(f"Got city from XMP for {file_path}: {city}")
-                    return city.lower().replace(" ", "_")
-
-        # Fall back to GPS reverse geocoding
-        with open(file_path, 'rb') as f:
-            tags = exifread.process_file(f, details=False)
+            # Try GPS reverse geocoding
+            gps_start = time.time()
             gps_info = {key: tags[key] for key in tags if key.startswith('GPS')}
             if gps_info.get('GPS GPSLatitude') and gps_info.get('GPS GPSLongitude'):
                 lat = gps_info.get('GPS GPSLatitude').values
@@ -300,20 +367,60 @@ def get_place_from_exif_or_xmp(file_path):
                     latitude = gps_to_decimal(lat, lat_ref)
                     longitude = gps_to_decimal(lon, lon_ref)
                     if latitude is not None and longitude is not None:
+                        # Check cache first (rounded to 6 decimal places for consistency)
+                        cache_key = (round(latitude, 6), round(longitude, 6))
+                        if cache_key in geocode_cache:
+                            logger.info(f"Using cached location for {file_path}: {geocode_cache[cache_key]}")
+                            elapsed = time.time() - start_time
+                            logger.debug(f"Got cached GPS location in {elapsed:.2f}s")
+                            return normalize_location(geocode_cache[cache_key])
                         try:
-                            location = geolocator.reverse((latitude, longitude), language="en", timeout=5)
+                            location = geolocator.reverse((latitude, longitude), language="en", timeout=5, zoom=16)
                             if location and location.raw.get("address"):
                                 address = location.raw["address"]
-                                city = address.get("city") or address.get("town") or address.get("village") or "unknown"
-                                logger.info(f"Got city from GPS reverse geocoding for {file_path}: {city}")
-                                return city.lower().replace(" ", "_")
+                                place = (
+                                    address.get("suburb") or
+                                    address.get("neighbourhood") or
+                                    address.get("city") or
+                                    address.get("town") or
+                                    address.get("village") or
+                                    "unknown"
+                                )
+                                geocode_cache[cache_key] = place
+                                logger.info(f"Got location from GPS reverse geocoding for {file_path}: {place}")
+                                elapsed = time.time() - start_time
+                                logger.debug(f"Got GPS location in {elapsed:.2f}s")
+                                return normalize_location(place)
                         except (GeocoderTimedOut, GeocoderUnavailable) as e:
                             logger.warning(f"Geocoding failed for {file_path}: {e}")
+                            elapsed = time.time() - gps_start
+                            logger.debug(f"Failed GPS geocoding in {elapsed:.2f}s")
+
+        # Fallback to non-generic parent directory
+        dir_start = time.time()
+        generic_names = {'_copy', 'sub', 'temp', 'backup', 'raw'}  # Generic directories to skip
+        current_dir = os.path.dirname(file_path)
+        max_levels = 5  # Limit traversal to avoid excessive backtracking
+        level = 0
+        while current_dir and level < max_levels:
+            dir_name = os.path.basename(current_dir)
+            normalized_dir = normalize_location(dir_name)
+            if dir_name and not dir_name.startswith('_groups') and normalized_dir not in generic_names:
+                logger.info(f"Using directory name as location for {file_path}: {dir_name}")
+                elapsed = time.time() - start_time
+                logger.debug(f"Got directory location in {elapsed:.2f}s")
+                return normalize_location(dir_name)
+            current_dir = os.path.dirname(current_dir)
+            level += 1
 
         logger.debug(f"No location found for {file_path}")
+        elapsed = time.time() - start_time
+        logger.debug(f"No location found in {elapsed:.2f}s")
         return "unknown"
     except Exception as e:
         logger.error(f"Failed to get place for {file_path}: {e}")
+        elapsed = time.time() - start_time
+        logger.debug(f"Failed to get place in {elapsed:.2f}s")
         return "unknown"
 
 # Confirm close if work in progress
@@ -347,14 +454,14 @@ def main():
     - Progress bar with elapsed/estimated time and processed/total counts.
     - Start, Pause, and Close buttons, with a warning if closing during processing.
     - Results listbox showing number of groups, images moved, and singles left.
-    - Comprehensive logging to a file.
+    - Comprehensive logging to a file, including profiling data.
     """
     logger.info("Starting imgsetsortr application")
     root = Tk()
     root.resizable(True, True)
     root.title("imgsetsortr - Group Images by Timestamp")
-    root.configure(bg="lightcoral")
-    root.tk_setPalette(background="lightcoral", foreground="blue")
+    root.configure(bg="gray90")
+    root.tk_setPalette(background="gray90", foreground="black")
     default_font = ("Arial", 12, "bold")
     root.option_add("*Font", default_font)
 
@@ -373,7 +480,7 @@ def main():
         logger.debug(f"Set window icon: {icon_path}")
 
     # Create main frame with scrollbar
-    canvas = Canvas(root)
+    canvas = Canvas(root, bg="gray90")
     scrollbar = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
     scrollable_frame = ttk.Frame(canvas)
     scrollable_frame.bind(
@@ -393,8 +500,8 @@ def main():
     label_input = Label(
         scrollable_frame,
         text="Select folder[s] containing images to group:",
-        bg="lightcoral",
-        fg="blue",
+        bg="gray90",
+        fg="black",
         font=("Arial", 14, "bold"),
     )
     label_input.pack(pady=10)
@@ -405,8 +512,8 @@ def main():
     label_selected_input = Label(
         frame_input_folder,
         text=selected_folders["input"] if selected_folders["input"] else "No input folder selected",
-        fg="black" if selected_folders["input"] else "gray",
-        bg="lightcoral",
+        fg="black" if selected_folders["input"] else "gray50",
+        bg="gray90",
     )
     label_selected_input.pack(side="left", fill="x", expand=True)
 
@@ -418,9 +525,19 @@ def main():
             selected_folders["input"] = folder
             # Default output folder to input_folder/_groups
             selected_folders["output"] = os.path.join(folder, "_groups")
+            # Ensure _groups folder exists
+            try:
+                os.makedirs(selected_folders["output"], exist_ok=True)
+                logger.info(f"Created/verified output folder: {selected_folders['output']}")
+            except Exception as e:
+                logger.error(f"Failed to create output folder {selected_folders['output']}: {str(e)}")
+                messagebox.showerror("Error", f"Failed to create output folder: {str(e)}")
+                selected_folders["output"] = None
+                label_selected_output.config(text="No output folder selected", fg="gray50")
+                return
             save_last_folders(selected_folders["input"], selected_folders["output"])
-            label_selected_input.config(text=folder, fg="blue")
-            label_selected_output.config(text=selected_folders["output"], fg="blue")
+            label_selected_input.config(text=folder, fg="black")
+            label_selected_output.config(text=selected_folders["output"], fg="black")
             listbox_results.delete(0, END)
             progress["value"] = 0
             label_elapsed.config(text="Elapsed: 0s")
@@ -431,7 +548,7 @@ def main():
             logger.info(f"Selected input folder: {folder}, default output: {selected_folders['output']}")
 
     button_browse_input = Button(
-        frame_input_folder, text="Browse Input", command=browse_input_folder, bg="lightblue"
+        frame_input_folder, text="Browse Input", command=browse_input_folder, bg="gray70"
     )
     button_browse_input.pack(side="right", padx=5, pady=5)
 
@@ -439,8 +556,8 @@ def main():
     label_output = Label(
         scrollable_frame,
         text="Select output folder for grouped images:",
-        bg="lightcoral",
-        fg="blue",
+        bg="gray90",
+        fg="black",
         font=("Arial", 14, "bold"),
     )
     label_output.pack(pady=10)
@@ -451,8 +568,8 @@ def main():
     label_selected_output = Label(
         frame_output_folder,
         text=selected_folders["output"] if selected_folders["output"] else "No output folder selected",
-        fg="black" if selected_folders["output"] else "gray",
-        bg="lightcoral",
+        fg="black" if selected_folders["output"] else "gray50",
+        bg="gray90",
     )
     label_selected_output.pack(side="left", fill="x", expand=True)
 
@@ -461,13 +578,24 @@ def main():
         initialdir = selected_folders["output"] if selected_folders["output"] else selected_folders["input"]
         folder = filedialog.askdirectory(initialdir=initialdir)
         if folder:
+            # Ensure _groups suffix if not present
+            if not folder.endswith('_groups'):
+                folder = os.path.join(folder, '_groups')
+            # Create output folder
+            try:
+                os.makedirs(folder, exist_ok=True)
+                logger.info(f"Created/verified output folder: {folder}")
+            except Exception as e:
+                logger.error(f"Failed to create output folder {folder}: {str(e)}")
+                messagebox.showerror("Error", f"Failed to create output folder: {str(e)}")
+                return
             selected_folders["output"] = folder
             save_last_folders(selected_folders["input"], selected_folders["output"])
-            label_selected_output.config(text=folder, fg="blue")
+            label_selected_output.config(text=folder, fg="black")
             logger.info(f"Selected output folder: {folder}")
 
     button_browse_output = Button(
-        frame_output_folder, text="Browse Output", command=browse_output_folder, bg="lightblue"
+        frame_output_folder, text="Browse Output", command=browse_output_folder, bg="gray70"
     )
     button_browse_output.pack(side="right", padx=5, pady=5)
 
@@ -476,8 +604,8 @@ def main():
     frame_folder_options.pack(pady=5, fill="x")
     style = ttk.Style()
     frame_folder_options.configure(style="FolderOptions.TFrame")
-    style.configure("TCheckbutton", background="lightcoral", foreground="blue")
-    style.configure("FolderOptions.TFrame", background="lightcoral")
+    style.configure("TCheckbutton", background="gray90", foreground="black")
+    style.configure("FolderOptions.TFrame", background="gray90")
 
     frame_folder_options.columnconfigure(0, weight=1)
     frame_folder_options.columnconfigure(1, weight=0)
@@ -499,20 +627,20 @@ def main():
     frame_thresholds = ttk.Frame(scrollable_frame)
     frame_thresholds.pack(pady=5, fill="x")
     frame_thresholds.configure(style="Thresholds.TFrame")
-    style.configure("Thresholds.TFrame", background="lightcoral")
+    style.configure("Thresholds.TFrame", background="gray90")
 
     frame_thresholds.columnconfigure(0, weight=1)
     frame_thresholds.columnconfigure(1, weight=0)
     frame_thresholds.columnconfigure(2, weight=0)
     frame_thresholds.columnconfigure(3, weight=1)
 
-    Label(frame_thresholds, text="Time diff (s):", font=("Arial", 12, "bold")).grid(
+    Label(frame_thresholds, text="Time diff (s):", font=("Arial", 12, "bold"), bg="gray90", fg="black").grid(
         row=0, column=1, padx=(0, 2), pady=2, sticky="e"
     )
     time_diff_var = StringVar(value=str(TIME_DIFF_THRESHOLD))
     entry_time_diff = ttk.Entry(frame_thresholds, textvariable=time_diff_var, width=5)
     entry_time_diff.grid(row=0, column=2, padx=(0, 10), pady=2, sticky="w")
-    entry_time_diff.configure(background="lightblue", foreground="blue")
+    entry_time_diff.configure(background="gray80", foreground="black")
 
     def update_thresholds():
         """Update the global time difference threshold based on user input."""
@@ -528,14 +656,14 @@ def main():
     entry_time_diff.bind("<Return>", lambda e: update_thresholds())
 
     # Label for total image count
-    label_image_count = Label(scrollable_frame, text="No folder selected")
+    label_image_count = Label(scrollable_frame, text="No folder selected", bg="gray90", fg="black")
     label_image_count.pack()
 
     # Listbox for folder contents
     frame_listbox = ttk.Frame(scrollable_frame)
     frame_listbox.pack(fill="both", expand=True, padx=10, pady=5)
     listbox_folder_contents = Listbox(
-        frame_listbox, width=80, height=18, bg="lightblue", fg="blue"
+        frame_listbox, width=80, height=18, bg="gray80", fg="black"
     )
     listbox_folder_contents.pack(side="left", fill="both", expand=True)
     scrollbar_folder = ttk.Scrollbar(
@@ -545,7 +673,7 @@ def main():
     listbox_folder_contents.config(yscrollcommand=scrollbar_folder.set)
 
     # Results listbox
-    listbox_results = Listbox(scrollable_frame, width=30, height=3, bg="lightblue", fg="blue")
+    listbox_results = Listbox(scrollable_frame, width=30, height=3, bg="gray80", fg="black")
     listbox_results.pack(pady=10)
 
     def update_folder_contents_listbox():
@@ -574,12 +702,12 @@ def main():
     frame_progress = ttk.Frame(scrollable_frame)
     frame_progress.pack(pady=5, fill="x")
     frame_progress.configure(style="Progress.TFrame")
-    style.configure("Progress.TFrame", background="lightcoral")
+    style.configure("Progress.TFrame", background="gray90")
 
     frame_labels = ttk.Frame(frame_progress)
     frame_labels.pack(fill="x")
     frame_labels.configure(style="Labels.TFrame")
-    style.configure("Labels.TFrame", background="lightcoral", foreground="blue")
+    style.configure("Labels.TFrame", background="gray90", foreground="black")
 
     frame_left = ttk.Frame(frame_labels)
     frame_left.pack(side="left", anchor="w")
@@ -591,16 +719,16 @@ def main():
     label_elapsed = Label(
         frame_left,
         text="Elapsed: 0s",
-        bg="lightcoral",
-        fg="blue",
+        bg="gray90",
+        fg="black",
         font=("Arial", 12, "bold"),
     )
     label_elapsed.pack(anchor="w")
     label_remaining = Label(
         frame_left,
         text="Estimated remaining: --",
-        bg="lightcoral",
-        fg="blue",
+        bg="gray90",
+        fg="black",
         font=("Arial", 12, "bold"),
     )
     label_remaining.pack(anchor="w")
@@ -608,16 +736,16 @@ def main():
     label_processed = Label(
         frame_right,
         text="Processed: 0",
-        bg="lightcoral",
-        fg="blue",
+        bg="gray90",
+        fg="black",
         font=("Arial", 12, "bold"),
     )
     label_processed.pack(anchor="e")
     label_total = Label(
         frame_right,
         text="Total: --",
-        bg="lightcoral",
-        fg="blue",
+        bg="gray90",
+        fg="black",
         font=("Arial", 12, "bold"),
     )
     label_total.pack(anchor="e")
@@ -681,6 +809,10 @@ def main():
         logger.info(f"Starting grouping: input={input_folder}, output={output_folder}, threshold={TIME_DIFF_THRESHOLD}s")
 
         def task():
+            # Initialize profiler
+            profiler = cProfile.Profile()
+            profiler.enable()
+
             start_time = time.time()
             folders_dict = get_image_files_by_folder(
                 input_folder, recursive=(process_subfolders_var.get() == "1")
@@ -750,16 +882,20 @@ def main():
             for idx, group in enumerate(groups, 1):
                 if not group:
                     continue
+                move_start = time.time()
                 place = get_place_from_exif_or_xmp(group[0])
                 first_time = get_image_timestamp(group[0])
                 if first_time:
-                    date_str = first_time.strftime("%Y%m%d")
-                    hour_str = first_time.strftime("%H00hrs")
+                    date_time_str = first_time.strftime("%Y%m%d-%H%M")
                     count = len(group)
-                    folder_name = f"{place}_{date_str}_{hour_str}_{idx:02d}_{count}"
+                    folder_name = f"{place}_{date_time_str}_{idx:02d}_{count}"
                     group_dir = os.path.join(output_folder, folder_name)
-                    os.makedirs(group_dir, exist_ok=True)
-                    logger.info(f"Creating group directory: {group_dir} with {count} images")
+                    try:
+                        os.makedirs(group_dir, exist_ok=True)
+                        logger.info(f"Created group directory: {group_dir} with {count} images")
+                    except Exception as e:
+                        logger.error(f"Failed to create group directory {group_dir}: {str(e)}")
+                        continue
                     for file in group:
                         try:
                             dest_path = os.path.join(group_dir, os.path.basename(file))
@@ -767,6 +903,8 @@ def main():
                             logger.debug(f"Moved {file} to {dest_path}")
                         except Exception as e:
                             logger.error(f"Failed to move {file}: {e}")
+                elapsed = time.time() - move_start
+                logger.debug(f"Moved group {idx} ({count} images) in {elapsed:.2f}s")
 
             num_groups = len(groups)
             total_moved = sum(len(g) for g in groups)
@@ -786,13 +924,23 @@ def main():
             )
             logger.info(f"Grouping complete: {num_groups} groups, {total_moved} images moved, {num_singles} singles left")
 
+            # Save profiling data
+            profiler.disable()
+            profile_file = os.path.join(get_app_dir(), "imgsetsortr_profile.prof")
+            profiler.dump_stats(profile_file)
+            # Log top time-consuming functions
+            ps = pstats.Stats(profile_file)
+            ps.sort_stats(pstats.SortKey.CUMULATIVE)
+            ps.print_stats(10)  # Log top 10 functions by cumulative time
+            logger.info(f"Profiling data saved to {profile_file}")
+
         threading.Thread(target=task, daemon=True).start()
 
     # Button row: Start | Pause | Close
     frame_buttons = ttk.Frame(scrollable_frame)
     frame_buttons.pack(fill="x", pady=10)
     frame_buttons.configure(style="Buttons.TFrame")
-    style.configure("Buttons.TFrame", background="lightcoral")
+    style.configure("Buttons.TFrame", background="gray90")
 
     frame_buttons.columnconfigure(0, weight=1)
     frame_buttons.columnconfigure(1, weight=0)
@@ -807,8 +955,8 @@ def main():
         text="Start",
         command=start_grouping,
         width=7,
-        bg="limegreen",
-        activebackground="green2",
+        bg="gray70",
+        activebackground="gray60",
         font=("Arial", 12, "bold"),
     )
     button_start.grid(row=0, column=1, padx=10)
@@ -839,8 +987,8 @@ def main():
         textvariable=pause_continue_label,
         command=pause_or_continue,
         width=10,
-        bg="gold",
-        activebackground="yellow",
+        bg="gray70",
+        activebackground="gray60",
         font=("Arial", 12, "bold"),
     )
     button_pause.grid(row=0, column=3, padx=10)
@@ -850,8 +998,8 @@ def main():
         text="EXIT",
         command=lambda: confirm_close(root, progress),
         width=7,
-        bg="red",
-        activebackground="darkred",
+        bg="gray70",
+        activebackground="gray60",
         font=("Arial", 12, "bold"),
     )
     button_close.grid(row=0, column=5, padx=10)

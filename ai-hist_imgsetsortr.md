@@ -49,3 +49,13 @@ INFO - Created group sydney_20250410_0600hrs_02: 2025-04-10 06:26:04 to 2025-04-
 
 6. appears functional;  
    provide readme.imgsetsortr.md, including dependencies, and separate file with a summation of the prompts from this chat [without answers] 'ai-hist_imgsetsortr.md'
+
+20250803
+
+7. in naming convention, when location/place is 2 or more words, hyphenate the place-name instead of underscore [to separate from the rest of the new dir-name parts], then join with underscore
+
+8. remove the 'anaglyph' coral+blue theming - just grays with black text
+
+9. implement caching, read performance improvement
+
+10. for naming convention, use hrs+mins, ie '0627' [using time of first img in set], and hyphenate date+time
