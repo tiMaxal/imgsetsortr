@@ -1,19 +1,25 @@
 # imgsetsortr
 
 ## Overview
-`imgsetsortr` is a Python utility that groups images in a folder based on contiguous timestamps from EXIF `DateTimeOriginal` metadata. Images are grouped if 5 or more have timestamps within a user-specified time threshold (default: 1.0 second). Groups are moved into subfolders named with the format `[place]_[date]_[24hrs]_[group-increment]_[no.-of-imgs]` (e.g., `sydney_20250410_0600hrs_01_20`). The place is derived from EXIF metadata (`XPTitle`, `XPSubject`, etc.), XMP metadata (`<xmp:City>`), or GPS reverse geocoding as a fallback. The application features a Tkinter-based GUI for folder selection, time threshold adjustment, and progress monitoring, with comprehensive logging.
+`imgsetsortr` [image-sets-sorter] is a Python utility that groups images in a folder based on contiguous timestamps from EXIF `DateTimeOriginal` metadata.
+Images are grouped if 5 or more have timestamps within a user-specified time threshold (default: 1.0 second).
+Groups are moved into subfolders named with the format `[place]_[YYYYMMDD-HHMM]_[group-increment]_[no.-of-imgs]` (e.g., `sydney_20250410-0600_01_20`).
+The place is derived from XMP metadata (`photoshop:City`, `Iptc4xmpCore:LocationCreated`, etc.), EXIF metadata (`XPTitle`, `XPSubject`, etc.), GPS reverse geocoding, or the parent directory as a fallback.
+The application supports both a Tkinter-based GUI and a command-line interface (CLI) for flexible usage. Comprehensive logging and profiling data are saved to the application directory.
 
 ## Features
-- **Input Folder Selection**: Choose a folder containing images (.jpg, .jpeg, .png).
-- **Output Folder Selection**: Select an output folder (defaults to `input_folder/_groups`).
-- **Subfolder Processing**: Option to include subfolders (default: off).
-- **Time Threshold**: User-settable time difference (seconds) for grouping images.
-- **Geocoding**: Extracts location from EXIF, XMP, or GPS reverse geocoding (requires internet for GPS fallback - UNTESTED).
+- **Input Folder Selection**: Choose a folder containing images (.jpg, .jpeg, .png) via GUI or CLI.
+- **Output Folder Selection**: Select an output folder (defaults to `input_folder/_groups`) via GUI or CLI.
+- **Subfolder Processing**: Option to include subfolders (default: off) via GUI checkbox or CLI `-r` flag.
+- **Time Threshold**: User-settable time difference (seconds, default '1') for grouping images via GUI entry or CLI `-i` option.
+- **Geocoding**: Extracts location from XMP, EXIF, GPS reverse geocoding, or parent directory (requires internet for GPS fallback - UNTESTED).
 - **GUI**: Tkinter interface with a scrollable window, folder contents listbox, progress bar, and Start/Pause/Close buttons.
+- **CLI**: Command-line interface with options for source folder (`-s`), recursive processing (`-r`), time increment (`-i`), and output folder (`-o`).
 - **Logging**: Detailed logs saved to `imgsetsortr.log` in the application directory.
-- **Group Naming**: Subfolders named as `[place]_[YYYYMMDD]_[HH00hrs]_[group-increment]_[no.-of-imgs]`.
+- **Profiling**: Performance profiling data saved to `imgsetsortr.prof`.
+- **Group Naming**: Subfolders named as `[place]_[YYYYMMDD-HHMM]_[group-increment]_[no.-of-imgs]`.
 - **Minimum Group Size**: Groups require 5 or more images.
-- **Progress Tracking**: Displays elapsed time, estimated remaining time, and processed/total image counts.
+- **Progress Tracking**: GUI displays elapsed time, estimated remaining time, and processed/total image counts; CLI prints progress to console.
 
 ## Dependencies
 - **Python**: Version 3.6 or higher.
@@ -21,32 +27,38 @@
   ```bash
   pip install exifread
   ```
-- **geopy**: For reverse geocoding GPS coordinates to city names (used as a fallback).
+- **geopy**: For reverse geocoding GPS coordinates to location names (used as a fallback).
   ```bash
   pip install geopy
   ```
-- **pillow**: For potential image processing (required for PIL imports).
+- **pillow**: For image processing (required for PIL imports).
   ```bash
   pip install pillow
   ```
-- **tkinter**: Included with standard Python installations for the GUI.
+- **pyexiv2**: For reading XMP metadata.
+  ```bash
+  pip install pyexiv2
+  ```
+- **tkinter**: Included with standard Python installations for the GUI (not required for CLI usage).
 
 ## Installation
 1. Ensure Python 3.6+ is installed.
 2. Install dependencies:
    ```bash
-   pip install exifread geopy pillow
+   pip install exifread geopy pillow pyexiv2
    ```
 3. Download or clone the `imgsetsortr.py` script to a local directory.
-4. Ensure the script has access to a writable directory for logs and settings (`settings.txt`).
+4. Ensure the script has access to a writable directory for logs (`imgsetsortr.log`), profiling data (`imgsetsortr.prof`), and settings (`settings.txt`).
 
 ## Usage
-1. Run the script:
+
+### GUI Mode
+1. Run the script without arguments:
    ```bash
    python imgsetsortr.py
    ```
 2. **Select Input Folder**:
-   - Click "Browse Input" to choose a folder containing images (e.g., `E:/images/20250410_0600hrs`).
+   - Click "Browse Input" to choose a folder containing images (e.g., `E:/images/20250410-0600`).
 3. **Select Output Folder**:
    - The output folder defaults to `input_folder/_groups`.
    - Click "Browse Output" to select a different folder if desired.
@@ -55,7 +67,7 @@
    - Adjust "Time diff (s)" to set the grouping threshold (default: 1.0 seconds).
 5. **Start Grouping**:
    - Click "Start" to begin grouping. Images are moved to subfolders in the output folder.
-   - Example output: `sydney_20250410_0600hrs_01_20` for a group of 20 images.
+   - Example output: `sydney_20250410-0600_01_20` for a group of 20 images.
 6. **Monitor Progress**:
    - View the folder contents in the listbox.
    - Track progress via the progress bar and labels (elapsed time, remaining time, processed images).
@@ -66,34 +78,58 @@
 9. **Logs**:
    - Check `imgsetsortr.log` in the application directory for detailed processing information.
 
+### CLI Mode
+Run the script with command-line arguments to process images non-interactively:
+```bash
+python imgsetsortr.py -s <source_folder> [-r] [-i <increment>] [-o <output_folder>]
+```
+- **`-s/--source <source_folder>`**: Specify the folder containing images to process (required).
+- **`-r/--recurse`**: Enable recursive processing of subdirectories (default: False).
+- **`-i/--increment <seconds>`**: Set the maximum seconds between images in a group (default: 1.0).
+- **`-o/--output <output_folder>`**: Specify the output folder (default: `<source_folder>/_groups`).
+
+**Example**:
+```bash
+python imgsetsortr.py -s /path/to/images -r -i 2.0 -o /path/to/output
+```
+This processes all images in `/path/to/images` and its subdirectories, grouping images within 2.0 seconds of each other, and places groups in `/path/to/output/_groups`.
+
+**Output**:
+- Progress updates are printed to the console (e.g., `Progress: 50.0%, Elapsed: 10s, Remaining: 10s, Processed: 100/200`).
+- Final results are displayed (e.g., `Grouping complete in 20s: Groups created: 5, Images moved: 100, Singles left: 50`).
+
 ## Output Format
-- Groups are created in the output folder with names like `sydney_20250410_0600hrs_01_20`:
-  - `place`: City from EXIF, XMP, or GPS (lowercase, underscores).
-  - `YYYYMMDD`: Date from the first image's timestamp.
-  - `HH00hrs`: Hour from the first image's timestamp.
+- Groups are created in the output folder with names like `sydney_20250410-0600_01_20`:
+  - `place`: Location from XMP, EXIF, GPS, or parent directory (lowercase, hyphens).
+  - `YYYYMMDD-HHMM`: Date and time from the first image's timestamp.
   - `group-increment`: Zero-padded group number (e.g., `01`, `02`).
   - `no.-of-imgs`: Number of images in the group (e.g., `20`).
 
 ## Notes
 - Images without EXIF `DateTimeOriginal` use file modification time as a fallback.
-- Geocoding requires an internet connection only for GPS reverse geocoding (if EXIF/XMP metadata is unavailable).
+- Geocoding requires an internet connection only for GPS reverse geocoding (if XMP/EXIF metadata is unavailable).
 - The minimum group size is 5 images; smaller groups are left ungrouped ("singles").
-- The GUI includes a vertical scrollbar to ensure all controls (e.g., buttons) are accessible.
-- Settings (last input/output folders) are saved in `settings.txt` in the application directory.
+- The GUI includes a vertical scrollbar to ensure all controls are accessible.
+- Settings (last input/output folders) are saved in `settings.txt` in the application directory for GUI mode.
+- CLI mode saves the provided input/output folders to `settings.txt` for consistency with GUI mode.
+- Profiling data is saved to `imgsetsortr.prof` for performance analysis.
 
 ## Example
-- Input folder: `E:/images/20250410_0600hrs`
-- Images:
-  - `image1.jpg`: `2025-04-10 06:25:03`, EXIF `XPTitle: Sydney`
-  - `image2.jpg`: `2025-04-10 06:25:03.500`
-  - `image3.jpg`: `2025-04-10 06:25:04`
-  - `image4.jpg`: `2025-04-10 06:25:04.500`
-  - `image5.jpg`: `2025-04-10 06:25:05`
-- Output: `E:/images/20250410_0600hrs/_groups/sydney_20250410_0600hrs_01_5`
-- Log entry: `Creating group directory: ...sydney_20250410_0600hrs_01_5 with 5 images`
+- **Input folder**: `E:/images/20250410-0600`
+- **Images**:
+  - `image1.jpg`: `2025-04-10 06:00:03`, XMP `photoshop:City: Sydney`
+  - `image2.jpg`: `2025-04-10 06:00:03.500`
+  - `image3.jpg`: `2025-04-10 06:00:04`
+  - `image4.jpg`: `2025-04-10 06:00:04.500`
+  - `image5.jpg`: `2025-04-10 06:00:05`
+- **Command**: `python imgsetsortr.py -s E:/images/20250410-0600 -i 1.0`
+- **Output**: `E:/images/20250410-0600/_groups/sydney_20250410-0600_01_5`
+- **Log entry**: `Creating group directory: ...sydney_20250410-0600_01_5 with 5 images`
 
 ## Troubleshooting
-- **No Groups Created**: Ensure images have valid EXIF timestamps and at least 5 images are within the time threshold.
-- **Geocoding Fails**: Check internet connectivity or add EXIF/XMP location metadata to images.
+- **No Groups Created**: Ensure images	has valid EXIF timestamps and at least 5 images are within the time threshold.
+- **Geocoding Fails**: Check internet connectivity or add XMP/EXIF location metadata to images.
+- **CLI Errors**: Verify the source folder exists and the output folder is writable.
 - **UI Issues**: Use the scrollbar to access buttons if the window is resized.
 - **Logs**: Review `imgsetsortr.log` for errors (e.g., missing timestamps, file move failures).
+- **Profiling**: Check `imgsetsortr.prof` for performance bottlenecks using a profiler tool (e.g., `snakeviz`).

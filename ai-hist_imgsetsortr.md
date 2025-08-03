@@ -59,3 +59,9 @@ INFO - Created group sydney_20250410_0600hrs_02: 2025-04-10 06:26:04 to 2025-04-
 9. implement caching, read performance improvement
 
 10. for naming convention, use hrs+mins, ie '0627' [using time of first img in set], and hyphenate date+time
+
+11. implement cli capability:
+- s/source = folder to process
+- r/recurse = process sub-dirs [default 'false' if absent]
+- i/increment = max number of seconds between imgs [only needed if different from default '1']
+- o/output = target folder [only needed if different from default '[source]/_groups']

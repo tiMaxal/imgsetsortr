@@ -30,13 +30,12 @@ Images are grouped if 5 or more have timestamps within a user-settable time incr
 Groups are moved into subfolders named with place (from XMP, EXIF, GPS metadata, or parent directory),
 date, hour, minute, group increment, and file count (e.g., 'kirribilli_20250410-0627_01_20') in a user-selected output folder
 (defaulting to input_folder/_groups).
-A GUI allows folder selection, subfolder processing, time threshold adjustment, and displays results.
+Supports GUI and CLI modes:
+- CLI: -s/--source, -r/--recurse, -i/--increment, -o/--output
+- GUI: Folder selection, subfolder processing, time threshold adjustment, and results display.
 Comprehensive logging is written to a file in the application directory, including profiling data.
 
- =======
-
 'voded' [vibe-coded] with Grok-ai
-
 """
 
 import sys
@@ -47,6 +46,7 @@ import time
 import logging
 import cProfile
 import pstats
+import argparse
 from datetime import datetime
 from tkinter import filedialog, messagebox, Tk, Label, Button, Listbox, END, StringVar, Canvas
 from tkinter import ttk
@@ -441,22 +441,170 @@ def confirm_close(root, progress):
     logger.info("Closing application")
     root.destroy()
 
-def main():
-    """Launch the Tkinter GUI for selecting input/output folders and grouping images by timestamp.
+# CLI processing function
+def process_images_cli(source, recurse, increment, output):
+    """Process images using command-line arguments.
 
-    Features:
-    - Input and output folder selection with browse buttons and last folder memory.
-    - Output folder defaults to input_folder/_groups.
-    - Option to process subfolders.
-    - User-settable time difference threshold for grouping.
-    - Listbox displaying folder contents.
-    - Scrollable window to ensure all controls are accessible.
-    - Progress bar with elapsed/estimated time and processed/total counts.
-    - Start, Pause, and Close buttons, with a warning if closing during processing.
-    - Results listbox showing number of groups, images moved, and singles left.
-    - Comprehensive logging to a file, including profiling data.
+    Args:
+        source (str): Source folder to process.
+        recurse (bool): Whether to process subdirectories.
+        increment (float): Maximum time difference (seconds) between images in a group.
+        output (str): Output folder for grouped images.
     """
-    logger.info("Starting imgsetsortr application")
+    global TIME_DIFF_THRESHOLD
+    TIME_DIFF_THRESHOLD = increment
+    logger.info(f"Starting CLI processing: source={source}, recurse={recurse}, increment={increment}, output={output}")
+
+    # Validate source folder
+    if not os.path.isdir(source):
+        logger.error(f"Source folder does not exist: {source}")
+        print(f"Error: Source folder '{source}' does not exist.")
+        sys.exit(1)
+
+    # Create output folder if it doesn't exist
+    try:
+        os.makedirs(output, exist_ok=True)
+        logger.info(f"Created/verified output folder: {output}")
+    except Exception as e:
+        logger.error(f"Failed to create output folder {output}: {str(e)}")
+        print(f"Error: Failed to create output folder '{output}': {str(e)}")
+        sys.exit(1)
+
+    # Initialize profiler
+    profiler = cProfile.Profile()
+    profiler.enable()
+
+    start_time = time.time()
+    folders_dict = get_image_files_by_folder(source, recursive=recurse)
+    image_files = [f for files in folders_dict.values() for f in files]
+    total_files = len(image_files)
+    logger.info(f"Total files to process: {total_files}")
+
+    def print_progress(value, elapsed, processed, processed_count, total):
+        """Print progress to console."""
+        remaining = (elapsed / value * (100 - value)) if value > 0 else -1
+        processed[0] = processed_count
+        print(f"\rProgress: {value:.1f}% | Elapsed: {int(elapsed)}s | "
+              f"Remaining: {int(remaining) if remaining >= 0 else '--'}s | "
+              f"Processed: {processed[0]}/{total}", end="")
+        logger.debug(f"Progress updated: value={value}, processed={processed[0]}, total={total}")
+
+    # Initialize processed as a list to match GUI mode
+    processed = [0]
+
+    # Early exit if no files to process
+    if total_files == 0:
+        print_progress(100, time.time() - start_time, processed, 0, 0)
+        print(f"\nCompleted: 0 groups created, 0 images moved, 0 singles left")
+        logger.info("CLI processing complete: 0 groups, 0 images moved, 0 singles left")
+        profiler.disable()
+        profile_file = os.path.join(get_app_dir(), "imgsetsortr.prof")
+        profiler.dump_stats(profile_file)
+        ps = pstats.Stats(profile_file)
+        ps.sort_stats(pstats.SortKey.CUMULATIVE)
+        ps.print_stats(10)
+        logger.info(f"Profiling data saved to {profile_file}")
+        return
+
+    # Sort images by timestamp, then by filename
+    image_files.sort(key=lambda x: (get_image_timestamp(x) or datetime.max, os.path.basename(x)))
+    groups = []
+    current_group = []
+    last_timestamp = None
+
+    for i, path in enumerate(image_files):
+        curr_time = get_image_timestamp(path)
+        if curr_time is None:
+            logger.warning(f"Skipping {path} due to missing timestamp")
+            continue
+        if not current_group:
+            current_group.append(path)
+            last_timestamp = curr_time
+        else:
+            time_diff = (curr_time - last_timestamp).total_seconds()
+            if time_diff <= TIME_DIFF_THRESHOLD:
+                current_group.append(path)
+            else:
+                if len(current_group) >= 5:
+                    groups.append(current_group)
+                    logger.debug(f"Formed group of {len(current_group)} images ending at {last_timestamp}")
+                current_group = [path]
+            last_timestamp = curr_time
+        elapsed = time.time() - start_time
+        progress_value = min(100, (i + 1) / len(image_files) * 100)
+        processed[0] = i + 1
+        print_progress(progress_value, elapsed, processed, i + 1, total_files)
+
+    if len(current_group) >= 5:
+        groups.append(current_group)
+        logger.debug(f"Formed final group of {len(current_group)} images")
+
+    # Move groups to output folder
+    for idx, group in enumerate(groups, 1):
+        if not group:
+            continue
+        move_start = time.time()
+        place = get_place_from_exif_or_xmp(group[0])
+        first_time = get_image_timestamp(group[0])
+        if first_time:
+            date_time_str = first_time.strftime("%Y%m%d-%H%M")
+            count = len(group)
+            folder_name = f"{place}_{date_time_str}_{idx:02d}_{count}"
+            group_dir = os.path.join(output, folder_name)
+            try:
+                os.makedirs(group_dir, exist_ok=True)
+                logger.info(f"Created group directory: {group_dir} with {count} images")
+            except Exception as e:
+                logger.error(f"Failed to create group directory {group_dir}: {str(e)}")
+                continue
+            for file in group:
+                try:
+                    dest_path = os.path.join(group_dir, os.path.basename(file))
+                    shutil.move(file, dest_path)
+                    logger.debug(f"Moved {file} to {dest_path}")
+                except Exception as e:
+                    logger.error(f"Failed to move {file}: {e}")
+        elapsed = time.time() - move_start
+        logger.debug(f"Moved group {idx} ({count} images) in {elapsed:.2f}s")
+
+    num_groups = len(groups)
+    total_moved = sum(len(g) for g in groups)
+    num_singles = total_files - total_moved
+    elapsed = time.time() - start_time
+    print_progress(100, elapsed, processed, total_files, total_files)
+    print(f"\nCompleted: {num_groups} groups created, {total_moved} images moved, {num_singles} singles left")
+    logger.info(f"CLI processing complete: {num_groups} groups, {total_moved} images moved, {num_singles} singles left")
+
+    # Save profiling data
+    profiler.disable()
+    profile_file = os.path.join(get_app_dir(), "imgsetsortr.prof")
+    profiler.dump_stats(profile_file)
+    ps = pstats.Stats(profile_file)
+    ps.sort_stats(pstats.SortKey.CUMULATIVE)
+    ps.print_stats(10)
+    logger.info(f"Profiling data saved to {profile_file}")
+
+def main():
+    """Launch the application in CLI or GUI mode based on command-line arguments."""
+    parser = argparse.ArgumentParser(description="Group images by contiguous timestamps from EXIF DateTimeOriginal.")
+    parser.add_argument("-s", "--source", help="Source folder to process")
+    parser.add_argument("-r", "--recurse", action="store_true", help="Process subdirectories (default: False)")
+    parser.add_argument("-i", "--increment", type=float, default=TIME_DIFF_THRESHOLD,
+                        help="Max seconds between images in a group (default: 1.0)")
+    parser.add_argument("-o", "--output", help="Output folder for grouped images (default: source/_groups)")
+
+    args = parser.parse_args()
+
+    # Check if CLI arguments are provided
+    if args.source:
+        source = os.path.abspath(args.source)
+        output = args.output if args.output else os.path.join(source, "_groups")
+        output = os.path.abspath(output)
+        process_images_cli(source, args.recurse, args.increment, output)
+        return
+
+    # GUI mode
+    logger.info("Starting imgsetsortr application in GUI mode")
     root = Tk()
     root.resizable(True, True)
     root.title("imgsetsortr - Group Images by Timestamp")
@@ -928,10 +1076,9 @@ def main():
             profiler.disable()
             profile_file = os.path.join(get_app_dir(), "imgsetsortr.prof")
             profiler.dump_stats(profile_file)
-            # Log top time-consuming functions
             ps = pstats.Stats(profile_file)
             ps.sort_stats(pstats.SortKey.CUMULATIVE)
-            ps.print_stats(10)  # Log top 10 functions by cumulative time
+            ps.print_stats(10)
             logger.info(f"Profiling data saved to {profile_file}")
 
         threading.Thread(target=task, daemon=True).start()
