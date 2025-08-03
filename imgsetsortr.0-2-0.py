@@ -926,7 +926,7 @@ def main():
 
             # Save profiling data
             profiler.disable()
-            profile_file = os.path.join(get_app_dir(), "imgsetsortr_profile.prof")
+            profile_file = os.path.join(get_app_dir(), "imgsetsortr.prof")
             profiler.dump_stats(profile_file)
             # Log top time-consuming functions
             ps = pstats.Stats(profile_file)
@@ -955,8 +955,8 @@ def main():
         text="Start",
         command=start_grouping,
         width=7,
-        bg="gray70",
-        activebackground="gray60",
+        bg="green",
+        activebackground="aqua",
         font=("Arial", 12, "bold"),
     )
     button_start.grid(row=0, column=1, padx=10)
@@ -987,8 +987,8 @@ def main():
         textvariable=pause_continue_label,
         command=pause_or_continue,
         width=10,
-        bg="gray70",
-        activebackground="gray60",
+        bg="gold",
+        activebackground="yellow",
         font=("Arial", 12, "bold"),
     )
     button_pause.grid(row=0, column=3, padx=10)
@@ -998,8 +998,8 @@ def main():
         text="EXIT",
         command=lambda: confirm_close(root, progress),
         width=7,
-        bg="gray70",
-        activebackground="gray60",
+        bg="red",
+        activebackground="orange",
         font=("Arial", 12, "bold"),
     )
     button_close.grid(row=0, column=5, padx=10)
