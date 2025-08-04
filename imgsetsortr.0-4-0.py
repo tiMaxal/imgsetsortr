@@ -31,8 +31,8 @@ Groups are moved into subfolders named with place (from XMP, EXIF, GPS metadata,
 date, hour, minute, group increment, and file count (e.g., 'kirribilli_20250410-0627_01_20') in a user-selected output folder
 (defaulting to input_folder/_groups).
 Supports GUI and CLI modes:
-- CLI: -s/--source, -r/--recurse, -i/--increment, -o/--output
-- GUI: Folder selection, subfolder processing, time threshold adjustment, and results display.
+- CLI: -s/--source, -r/--recurse, -i/--increment, -o/--output, -?/--help
+- GUI: Folder selection, subfolder processing, time threshold adjustment, results display, and help popup.
 Comprehensive logging is written to a file in the application directory, including profiling data.
 
 'voded' [vibe-coded] with Grok-ai
@@ -48,7 +48,7 @@ import cProfile
 import pstats
 import argparse
 from datetime import datetime
-from tkinter import filedialog, messagebox, Tk, Label, Button, Listbox, END, StringVar, Canvas
+from tkinter import filedialog, messagebox, Tk, Label, Button, Listbox, END, StringVar, Canvas, Toplevel, Text
 from tkinter import ttk
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
@@ -57,6 +57,7 @@ from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
 import exifread
 import re
 import pyexiv2
+import webbrowser
 
 # Default time difference threshold (seconds) between consecutive images
 TIME_DIFF_THRESHOLD = 1.0
@@ -105,7 +106,81 @@ def get_app_dir():
     return config_dir
 
 SETTINGS_FILE = os.path.join(get_app_dir(), "settings.txt")
+HELP_FILE = os.path.join(get_app_dir(), "imgsetsortr_help.html")
 logger = setup_logging(get_app_dir())
+
+# Help content for CLI and GUI
+HELP_CONTENT = """
+imgsetsortr - Group Images by Timestamp
+
+Overview:
+imgsetsortr is a utility that groups images based on contiguous timestamps from EXIF DateTimeOriginal metadata. Images are grouped if 5 or more have timestamps within a specified time increment. Groups are moved into subfolders named with a place (derived from XMP, EXIF, GPS metadata, or parent directory), date, hour, minute, group number, and file count (e.g., 'kirribilli_20250410-0627_01_20').
+
+Usage:
+- CLI Mode:
+  Run from the command line with:
+    python imgsetsortr.py -s SOURCE [-r] [-i INCREMENT] [-o OUTPUT] [-? | --help]
+  Options:
+    -s, --source     Source folder containing images (required).
+    -r, --recurse    Process subdirectories recursively (optional).
+    -i, --increment  Maximum seconds between images in a group (default: 1.0).
+    -o, --output     Output folder for grouped images (default: source/_groups).
+    -?, --help       Show this help message and exit.
+
+  Example:
+    python imgsetsortr.py -s ./photos -r -i 2.0 -o ./photos_sorted
+
+- GUI Mode:
+  Run without arguments to launch the GUI:
+    python imgsetsortr.py
+  Steps:
+    1. Click "Browse Input" to select the folder containing images.
+    2. Optionally, click "Browse Output" to choose a custom output folder (defaults to input_folder/_groups).
+    3. Check "Process subfolders" to include images in subdirectories.
+    4. Adjust "Time diff (s)" to set the maximum seconds between images in a group.
+    5. Click "Start" to begin grouping. Use "Pause" to pause/resume, or "EXIT" to close.
+    6. Click "Help" (top-left) for these instructions.
+
+Output:
+- Groups of 5 or more images with timestamps within the specified increment are moved to subfolders in the output directory.
+- Subfolder names follow the format: <place>_<YYYYMMDD-HHMM>_<group_number>_<file_count>.
+- Images not in groups (singles) remain in their original folders.
+- A log file (imgsetsortr.log) and profiling data (imgsetsortr.prof) are saved in the application directory.
+
+Notes:
+- Supported image formats: .jpg, .jpeg, .png.
+- Location is derived from XMP (e.g., photoshop:City), EXIF (e.g., XPTitle), GPS reverse geocoding, or the parent directory name.
+- Timestamps are read from EXIF DateTimeOriginal, falling back to file modification time if unavailable.
+- Invalid timestamps (before 2000 or beyond next year) use file modification time.
+- Requires Python libraries: PIL, exifread, pyexiv2, geopy.
+"""
+
+def create_help_html():
+    """Create an HTML file with help content in the application directory."""
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>imgsetsortr Help</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; line-height: 1.6; }}
+        h1 {{ color: #333; }}
+        h2 {{ color: #555; }}
+        pre {{ background: #f4f4f4; padding: 10px; border-radius: 5px; }}
+        p {{ margin: 10px 0; }}
+    </style>
+</head>
+<body>
+    <h1>imgsetsortr Help</h1>
+    <pre>{HELP_CONTENT}</pre>
+</body>
+</html>
+"""
+    try:
+        with open(HELP_FILE, "w", encoding="utf-8") as f:
+            f.write(html_content)
+        logger.info(f"Created help HTML file: {HELP_FILE}")
+    except Exception as e:
+        logger.error(f"Failed to create help HTML file: {e}")
 
 # Load/save last used folders
 def load_last_folders():
@@ -586,12 +661,24 @@ def process_images_cli(source, recurse, increment, output):
 
 def main():
     """Launch the application in CLI or GUI mode based on command-line arguments."""
-    parser = argparse.ArgumentParser(description="Group images by contiguous timestamps from EXIF DateTimeOriginal.")
+    # Define a custom help formatter for better CLI help message
+    class CustomHelpFormatter(argparse.RawDescriptionHelpFormatter):
+        def add_usage(self, usage, actions, groups, prefix=None):
+            if prefix is None:
+                prefix = "Usage: "
+            super().add_usage(usage, actions, groups, prefix)
+
+    parser = argparse.ArgumentParser(
+        description=HELP_CONTENT,
+        formatter_class=CustomHelpFormatter,
+        add_help=False
+    )
     parser.add_argument("-s", "--source", help="Source folder to process")
     parser.add_argument("-r", "--recurse", action="store_true", help="Process subdirectories (default: False)")
     parser.add_argument("-i", "--increment", type=float, default=TIME_DIFF_THRESHOLD,
                         help="Max seconds between images in a group (default: 1.0)")
     parser.add_argument("-o", "--output", help="Output folder for grouped images (default: source/_groups)")
+    parser.add_argument("-?", "--help", action="help", help="Show this help message and exit")
 
     args = parser.parse_args()
 
@@ -605,6 +692,7 @@ def main():
 
     # GUI mode
     logger.info("Starting imgsetsortr application in GUI mode")
+    create_help_html()  # Create HTML help file at startup
     root = Tk()
     root.resizable(True, True)
     root.title("imgsetsortr - Group Images by Timestamp")
@@ -617,9 +705,9 @@ def main():
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     x = (screen_width - 800) // 4
-    y = (screen_height - 600) // 4
-    root.geometry(f"600x800+{x}+{y}")
-    logger.debug("Window initialized with geometry 600x800")
+    y = (screen_height - 600) // 8
+    root.geometry(f"800x950+{x}+{y}")
+    logger.debug("Window initialized with geometry 800x950")
 
     # Set window icon if available
     icon_path = os.path.join(os.path.dirname(__file__), "imgs/imgsetsortr.ico")
@@ -639,6 +727,77 @@ def main():
     canvas.configure(yscrollcommand=scrollbar.set)
     canvas.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")
+
+    # Help button (top-left)
+    def show_help():
+        """Display a popup with help content and a link to open as HTML."""
+        help_window = Toplevel(root)
+        help_window.title("imgsetsortr Help")
+        help_window.geometry("600x400")
+        help_window.configure(bg="gray90")
+        help_window.resizable(True, True)
+
+        # Create frame for text and scrollbar
+        help_frame = ttk.Frame(help_window)
+        help_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Scrollbar on the left
+        help_scrollbar = ttk.Scrollbar(help_frame, orient="vertical")
+        help_scrollbar.pack(side="left", fill="y")
+
+        # Text widget for help content
+        help_text = Text(
+            help_frame,
+            wrap="word",
+            height=20,
+            bg="gray80",
+            fg="black",
+            font=("Arial", 10),
+            yscrollcommand=help_scrollbar.set
+        )
+        help_text.pack(side="left", fill="both", expand=True)
+        help_scrollbar.config(command=help_text.yview)
+
+        # Insert help content
+        help_text.insert(END, HELP_CONTENT)
+        help_text.config(state="disabled")  # Make read-only
+
+        # Button to open help as HTML
+        def open_html_help():
+            try:
+                webbrowser.open(f"file://{os.path.abspath(HELP_FILE)}")
+                logger.info(f"Opened help HTML in browser: {HELP_FILE}")
+            except Exception as e:
+                logger.error(f"Failed to open help HTML: {e}")
+                messagebox.showerror("Error", f"Failed to open help file: {e}")
+
+        html_button = Button(
+            help_window,
+            text="Open as HTML",
+            command=open_html_help,
+            bg="gray70",
+            font=("Arial", 10, "bold")
+        )
+        html_button.pack(pady=5)
+
+        # Center the help window
+        help_window.update_idletasks()
+        screen_width = help_window.winfo_screenwidth()
+        screen_height = help_window.winfo_screenheight()
+        x = (screen_width - 600) // 2
+        y = (screen_height - 400) // 2
+        help_window.geometry(f"600x400+{x}+{y}")
+        logger.info("Opened help popup")
+
+    help_button = Button(
+        scrollable_frame,
+        text="Help",
+        command=show_help,
+        bg="blue",
+        fg="white",
+        font=("Arial", 12, "bold")
+    )
+    help_button.pack(anchor="nw", padx=10, pady=5)
 
     # Store selected folders
     input_folder, output_folder = load_last_folders()

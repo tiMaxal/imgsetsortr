@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>imgsetsortr Help</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.6; }
+        h1 { color: #333; }
+        h2 { color: #555; }
+        pre { background: #f4f4f4; padding: 10px; border-radius: 5px; }
+        p { margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>imgsetsortr Help</h1>
+    <pre>
+imgsetsortr - Group Images by Timestamp
+
+Overview:
+imgsetsortr is a utility that groups images based on contiguous timestamps from EXIF DateTimeOriginal metadata. Images are grouped if 5 or more have timestamps within a specified time increment. Groups are moved into subfolders named with a place (derived from XMP, EXIF, GPS metadata, or parent directory), date, hour, minute, group number, and file count (e.g., 'kirribilli_20250410-0627_01_20').
+
+Usage:
+- CLI Mode:
+  Run from the command line with:
+    python imgsetsortr.py -s SOURCE [-r] [-i INCREMENT] [-o OUTPUT] [-? | --help]
+  Options:
+    -s, --source     Source folder containing images (required).
+    -r, --recurse    Process subdirectories recursively (optional).
+    -i, --increment  Maximum seconds between images in a group (default: 1.0).
+    -o, --output     Output folder for grouped images (default: source/_groups).
+    -?, --help       Show this help message and exit.
+
+  Example:
+    python imgsetsortr.py -s ./photos -r -i 2.0 -o ./photos_sorted
+
+- GUI Mode:
+  Run without arguments to launch the GUI:
+    python imgsetsortr.py
+  Steps:
+    1. Click "Browse Input" to select the folder containing images.
+    2. Optionally, click "Browse Output" to choose a custom output folder (defaults to input_folder/_groups).
+    3. Check "Process subfolders" to include images in subdirectories.
+    4. Adjust "Time diff (s)" to set the maximum seconds between images in a group.
+    5. Click "Start" to begin grouping. Use "Pause" to pause/resume, or "EXIT" to close.
+    6. Click "Help" (top-left) for these instructions.
+
+Output:
+- Groups of 5 or more images with timestamps within the specified increment are moved to subfolders in the output directory.
+- Subfolder names follow the format: <place>_<YYYYMMDD-HHMM>_<group_number>_<file_count>.
+- Images not in groups (singles) remain in their original folders.
+- A log file (imgsetsortr.log) and profiling data (imgsetsortr.prof) are saved in the application directory.
+
+Notes:
+- Supported image formats: .jpg, .jpeg, .png.
+- Location is derived from XMP (e.g., photoshop:City), EXIF (e.g., XPTitle), GPS reverse geocoding, or the parent directory name.
+- Timestamps are read from EXIF DateTimeOriginal, falling back to file modification time if unavailable.
+- Invalid timestamps (before 2000 or beyond next year) use file modification time.
+- Requires Python libraries: PIL, exifread, pyexiv2, geopy.
+</pre>
+</body>
+</html>
