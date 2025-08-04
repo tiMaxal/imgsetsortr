@@ -1,4 +1,4 @@
-- cli functionality 
+- [done] cli functionality 
 - keyboard actions 
 - hash [first 3, 5?] for similarity ie, check not pairs [or pano?]
 - [done] remove 'anaglyph' [coral+blue] theming 
